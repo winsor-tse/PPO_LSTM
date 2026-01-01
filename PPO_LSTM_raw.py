@@ -92,6 +92,10 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer        
 
+"""
+Entirely based on Ray's LSTM wrapper around its RL Algorithms:
+https://github.com/ray-project/ray/blob/master/rllib/examples/rl_modules/classes/lstm_containing_rlm.py
+"""
 
 class Agent_LSTM_PPO(nn.Module):
     def __init__(self, obs_dim, action_dim, lstm_hidden_size, dense_layers: list[128, 128], continous_actions):
@@ -134,7 +138,6 @@ class Agent_LSTM_PPO(nn.Module):
             layer_init(nn.Linear(64, 1), std=1.0),
         )
 
-
     def _compute_embeddings_and_state_out(self, batch):
         obs = batch['obs']
         state_in = batch.get("state_in", None)
@@ -149,11 +152,6 @@ class Agent_LSTM_PPO(nn.Module):
         embeddings, (h_new, c_new) = self.lstm(obs, hidden_state)
         embeddings_out = self._embeddings_fc_net(embeddings)
         return embeddings_out, {"h": h_new, "c": c_new}
-
-    def forward(self, batch):
-        embeddings, state_outs = self._compute_embeddings_and_state_out(batch)
-        action_logits = self.actor(embeddings)
-        return action_logits
 
     def get_values(self, batch, embeddings):
         if embeddings is None:
@@ -212,6 +210,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
+    #TODO: Agent_LSTM_PPO needs to take in parameters
     agent = Agent_LSTM_PPO(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
