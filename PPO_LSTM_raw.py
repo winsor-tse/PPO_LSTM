@@ -1,14 +1,29 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import tyro
+import torch.optim as optim
+import time
+import gymnasium as gym
 from torch.distributions.categorical import Categorical
+from torch.utils.tensorboard import SummaryWriter
+import random
 from PPO_args import Args
 """
 Instead of using LSTM module, will be implementing LSTM from scratch.
-
 Optionally could use GRU.
-
 """
+
+# CUDA diagnostics
+print("torch version:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+print("CUDA device count:", torch.cuda.device_count())
+if torch.cuda.is_available():
+    try:
+        print("current device:", torch.cuda.current_device())
+        print("device name:", torch.cuda.get_device_name(0))
+    except Exception:
+        pass
 
 class LSTM_cell(nn.Module):
     def __init__(self, input_size, hidden_size):
@@ -16,20 +31,19 @@ class LSTM_cell(nn.Module):
         #all needed inputs
         self.input_size = input_size
         self.hidden_size = hidden_size
-        combined_size = self.input_size + self.hidden_size
-        self.forget_gate = nn.Linear(combined_size, hidden_size)
-        self.input_gate = nn.Linear(combined_size, hidden_size)
-        self.candidate_gate = nn.Linear(combined_size, hidden_size)
-        self.output_gate = nn.Linear(combined_size, hidden_size)
+        self.combined_size = self.input_size + self.hidden_size
+        self.forget_gate = nn.Linear(self.combined_size, hidden_size)
+        self.input_gate = nn.Linear(self.combined_size, hidden_size)
+        self.candidate_gate = nn.Linear(self.combined_size, hidden_size)
+        self.output_gate = nn.Linear(self.combined_size, hidden_size)
 
     def forward(self, i, hidden_state):
         h_prev, c_prev = hidden_state
 
         combined = torch.cat([i, h_prev], dim=1)
 
-        if len(combined) != combined_size:
-            #throw error combined size does not match the catted input_size + hidden_size
-            return
+        if combined.shape[1] != self.combined_size:
+            raise ValueError("combined input dimension does not match input_size + hidden_size")
 
         #forget gate uses binary classification (sigmoid)
         f_g = torch.sigmoid(self.forget_gate(combined))
@@ -63,8 +77,8 @@ class LSTM_Layer(nn.Module):
     hidden_state: tuple of (h0, c0) or None
     """
     def forward(self, x, hidden_state=None):
-        batch_size, seq_len, input_size = X.shape
-        if hidden_state == None:
+        batch_size, seq_len, input_size = x.shape
+        if hidden_state is None:
             h = torch.zeros(batch_size, self.hidden_size, device=x.device)
             c = torch.zeros(batch_size, self.hidden_size, device=x.device)
         else:
@@ -98,39 +112,50 @@ https://github.com/ray-project/ray/blob/master/rllib/examples/rl_modules/classes
 """
 
 class Agent_LSTM_PPO(nn.Module):
-    def __init__(self, obs_dim, action_dim, lstm_hidden_size, dense_layers: list[128, 128], continous_actions):
+    def __init__(self, obs_dim, action_dim, lstm_hidden_size=64, dense_layers=None, continuous_actions=False):
         super(Agent_LSTM_PPO, self).__init__()
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
+        if dense_layers is None:
+            dense_layers = [128, 128]
+
+        # obs_dim can be an int or a shape tuple
+        try:
+            obs_size = int(np.prod(obs_dim))
+        except Exception:
+            obs_size = int(obs_dim)
+
+        # action_dim should be an int (number of discrete actions)
+        self.obs_dim = obs_size
+        self.action_dim = int(action_dim)
         self.lstm_hidden_size = lstm_hidden_size
         self.dense_layers = dense_layers
-        self.continous_actions = continous_actions
-        self.lstm = LSTM_Layer(obs_dim, lstm_hidden_size)
+        self.continuous_actions = continuous_actions
 
-        #Following Code will use FCNET to compute embeddings
-        #Embeddings will be feed through this
+        self.lstm = LSTM_Layer(self.obs_dim, lstm_hidden_size)
+
+        # build FC embedding net that maps LSTM hidden -> embedding
         layers = []
-        #outsize defaulted as 128
         in_size = lstm_hidden_size
-        #size of 2
         for out_size in dense_layers:
             layers.append(layer_init(nn.Linear(in_size, out_size)))
-            layers.append(nn.RELU())
+            layers.append(nn.ReLU())
             in_size = out_size
-        # REUL(RELU(lstm_hidden_size x out_size),  out_size) -> outsize
-        self._embeddings_fc_net = nn.Sequential(*layers)
-        #Actor is the Policy head P(s,a)
+        
+        self._embeddings_fc_net = nn.Sequential(*layers) if layers else nn.Identity()
+
+        final_embedding_size = dense_layers[-1] if len(dense_layers) > 0 else lstm_hidden_size
+
+        # Actor head
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(lstm_hidden_size, 64)),
+            layer_init(nn.Linear(final_embedding_size, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, self.action_dim), std=0.01),
         )
-        #critic only ouputs a Value(s)
-        #istead of taking in envs.single_observation_space -> take in lstm_hidden size
+
+        # Critic head
         self.critic = nn.Sequential(
-            layer_init(lstm_hidden_size, 64),
+            layer_init(nn.Linear(final_embedding_size, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
@@ -138,37 +163,101 @@ class Agent_LSTM_PPO(nn.Module):
         )
 
     def _compute_embeddings_and_state_out(self, batch):
-        obs = batch['obs']
-        state_in = batch.get("state_in", None)
+        # Accept either a dict batch {'obs': tensor, 'state_in': {...}} or a raw obs tensor
+        if isinstance(batch, dict):
+            obs = batch['obs']
+            state_in = batch.get('state_in', None)
+        else:
+            obs = batch
+            state_in = None
 
         if state_in is not None:
             h = state_in['h']
-            c = state_out['c']
-            hidden_state = (h,c)
+            c = state_in['c']
+            hidden_state = (h, c)
         else:
             hidden_state = None
-        
-        embeddings, (h_new, c_new) = self.lstm(obs, hidden_state)
-        embeddings_out = self._embeddings_fc_net(embeddings)
+
+        # Ensure obs has sequence dim: (batch, seq_len, obs_dim)
+        squeezed = False
+        if obs.ndim == 2:
+            obs_seq = obs.unsqueeze(1)
+            squeezed = True
+        else:
+            obs_seq = obs
+
+        embeddings, (h_new, c_new) = self.lstm(obs_seq, hidden_state)
+
+        # embeddings: (batch, seq_len, lstm_hidden_size)
+        b, s, hdim = embeddings.shape
+        embeddings_flat = embeddings.reshape(-1, hdim)
+        embeddings_out_flat = self._embeddings_fc_net(embeddings_flat)
+        embeddings_out = embeddings_out_flat.view(b, s, -1)
+
+        # return embeddings for the last time step and the new state
         return embeddings_out, {"h": h_new, "c": c_new}
 
     def get_values(self, batch, embeddings):
+        # kept for compatibility but prefer get_value
         if embeddings is None:
-            embeddings, state_outs = self._compute_embeddings_and_state_out(batch)
-        values = self.critic(embeddings).squeeze(-1)
+            embeddings_out, _ = self._compute_embeddings_and_state_out(batch)
+            # use last time step
+            embeddings_in = embeddings_out[:, -1, :]
+        else:
+            embeddings_in = embeddings
+        values = self.critic(embeddings_in).squeeze(-1)
         return values
 
+    def get_value(self, obs):
+        embeddings_out, _ = self._compute_embeddings_and_state_out(obs)
+        embeddings_in = embeddings_out[:, -1, :]
+        return self.critic(embeddings_in).squeeze(-1)
+
     def get_action_and_value(self, batch, action=None):
-        embeddings, state_outs = self._compute_embeddings_and_state_out(batch)
-        logits = self.actor(embeddings)
+        embeddings_out, state_outs = self._compute_embeddings_and_state_out(batch)
+        # use last time step
+        embeddings_in = embeddings_out[:, -1, :]
+        logits = self.actor(embeddings_in)
         probs = Categorical(logits=logits)
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(embeddings).squeeze(-1)
+        return action, probs.log_prob(action), probs.entropy(), self.critic(embeddings_in).squeeze(-1)
+
+
+def make_env(env_id, idx, capture_video, run_name):
+    def thunk():
+        # Use rgb_array render mode when capturing video for the first env
+        if capture_video and idx == 0:
+            env = gym.make(env_id, render_mode="rgb_array")
+
+            # episode_trigger will return True whenever we've entered a new
+            # global_step bucket of size VIDEO_STATE['freq'] (i.e., every 10k steps)
+            def episode_trigger(episode_id: int):
+                try:
+                    bucket = int(global_step) // VIDEO_STATE["freq"]
+                except Exception:
+                    # If global_step isn't available yet, don't record
+                    return False
+                if bucket > VIDEO_STATE["last_bucket"]:
+                    VIDEO_STATE["last_bucket"] = bucket
+                    return True
+                return False
+
+            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}", episode_trigger=episode_trigger)
+        else:
+            env = gym.make(env_id)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        return env
+
+    return thunk
 
 """
 Modified version of CleanRL's PPO
 """
+
+# Global state to control periodic video recording (every N steps)
+VIDEO_STATE = {"last_bucket": -1, "freq": 10000}
+
 if __name__ == "__main__":
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -200,16 +289,20 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    # env setup
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    #TODO: Agent_LSTM_PPO needs to take in parameters
-    # obs_dim, action_dim, lstm_hidden_size, dense_layers: list[128, 128], continous_actions
-    Agent_LSTM_PPO(envs.single_observation_space.shape, envs.single_action_space.shape, lstm_hidden_size=64, dense_layers=list[128, 128], continous_actions=False)
-    agent = Agent_LSTM_PPO(envs).to(device)
+    # Instantiate agent with correct obs/action dims
+    agent = Agent_LSTM_PPO(
+        envs.single_observation_space.shape,
+        envs.single_action_space.n,
+        lstm_hidden_size=64,
+        dense_layers=[128, 128],
+        continuous_actions=False,
+    ).to(device)
+    print("Agent device:", next(agent.parameters()).device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -252,12 +345,14 @@ if __name__ == "__main__":
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
 
+            # Log episodic returns when episodes finish. Handles both
+            # the newer `infos` dict with `final_info` and the older/list-style infos.
             if "final_info" in infos:
-                for info in infos["final_info"]:
-                    if info and "episode" in info:
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                for final_info in infos["final_info"]:
+                    if final_info and "episode" in final_info:
+                        print(f"global_step={global_step}, episodic_return={final_info['episode']['r']}")
+                        writer.add_scalar("charts/episodic_return", final_info["episode"]["r"], global_step)
+                        writer.add_scalar("charts/episodic_length", final_info["episode"]["l"], global_step)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -286,6 +381,7 @@ if __name__ == "__main__":
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
         clipfracs = []
+
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
