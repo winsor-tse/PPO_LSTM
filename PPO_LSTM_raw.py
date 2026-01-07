@@ -109,7 +109,6 @@ class Agent_LSTM_PPO(nn.Module):
 
         #Following Code will use FCNET to compute embeddings
         #Embeddings will be feed through this
-
         layers = []
         #outsize defaulted as 128
         in_size = lstm_hidden_size
@@ -167,8 +166,6 @@ class Agent_LSTM_PPO(nn.Module):
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(embeddings).squeeze(-1)
 
-
-
 """
 Modified version of CleanRL's PPO
 """
@@ -180,7 +177,6 @@ if __name__ == "__main__":
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
         import wandb
-
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
@@ -211,6 +207,8 @@ if __name__ == "__main__":
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     #TODO: Agent_LSTM_PPO needs to take in parameters
+    # obs_dim, action_dim, lstm_hidden_size, dense_layers: list[128, 128], continous_actions
+    Agent_LSTM_PPO(envs.single_observation_space.shape, envs.single_action_space.shape, lstm_hidden_size=64, dense_layers=list[128, 128], continous_actions=False)
     agent = Agent_LSTM_PPO(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
