@@ -9,8 +9,8 @@ from torch.distributions.categorical import Categorical
 import random
 from PPO_args import Args
 from torch.utils.tensorboard import SummaryWriter
-import random
-from PPO_args import Args
+
+
 """
 Instead of using LSTM module, will be implementing LSTM from scratch.
 Optionally could use GRU.

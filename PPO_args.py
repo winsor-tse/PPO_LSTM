@@ -22,9 +22,9 @@ class Args:
     capture_video: bool = True
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     # Algorithm specific arguments
-    env_id: str = "CartPole-v1"
+    env_id: str = "Acrobot-v1"
     """the id of the environment"""
-    total_timesteps: int = 1000000 #was 500k
+    total_timesteps: int = 1500000 #was 500k
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
