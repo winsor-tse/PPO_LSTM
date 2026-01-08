@@ -6,6 +6,8 @@ import torch.optim as optim
 import time
 import gymnasium as gym
 from torch.distributions.categorical import Categorical
+import random
+from PPO_args import Args
 from torch.utils.tensorboard import SummaryWriter
 import random
 from PPO_args import Args
@@ -250,14 +252,7 @@ def make_env(env_id, idx, capture_video, run_name):
         return env
 
     return thunk
-
-"""
-Modified version of CleanRL's PPO
-"""
-
-# Global state to control periodic video recording (every N steps)
-VIDEO_STATE = {"last_bucket": -1, "freq": 10000}
-
+    
 if __name__ == "__main__":
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -319,6 +314,9 @@ if __name__ == "__main__":
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
+    # per-environment episodic tracking for reliable logging
+    ep_returns = np.zeros(args.num_envs, dtype=float)
+    ep_lengths = np.zeros(args.num_envs, dtype=int)
 
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
@@ -342,17 +340,29 @@ if __name__ == "__main__":
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
             next_done = np.logical_or(terminations, truncations)
+
+            # update per-env episodic counters using numpy reward
+            try:
+                reward_arr = np.array(reward)
+            except Exception:
+                reward_arr = np.asarray(reward)
+            ep_returns += reward_arr
+            ep_lengths += 1
+
+            # for any envs that finished this step, log their episodic returns
+            finished = np.where(next_done)[0]
+            for i in finished:
+                r = float(ep_returns[i])
+                l = int(ep_lengths[i])
+                print(f"global_step={global_step}, episodic_return={r}")
+                writer.add_scalar("charts/episodic_return", r, global_step)
+                writer.add_scalar("charts/episodic_length", l, global_step)
+                # reset counters for that env
+                ep_returns[i] = 0.0
+                ep_lengths[i] = 0
+
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
-
-            # Log episodic returns when episodes finish. Handles both
-            # the newer `infos` dict with `final_info` and the older/list-style infos.
-            if "final_info" in infos:
-                for final_info in infos["final_info"]:
-                    if final_info and "episode" in final_info:
-                        print(f"global_step={global_step}, episodic_return={final_info['episode']['r']}")
-                        writer.add_scalar("charts/episodic_return", final_info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", final_info["episode"]["l"], global_step)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -446,8 +456,19 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
+        #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        
+        # Log LSTM embedding statistics once per iteration
+        with torch.no_grad():
+            embeddings_out, _ = agent._compute_embeddings_and_state_out(b_obs)
+            embeddings_in = embeddings_out[:, -1, :]  # last timestep
+            emb_norm = torch.norm(embeddings_in, dim=1).mean()
+            emb_mean = embeddings_in.mean()
+            emb_std = embeddings_in.std()
+            writer.add_scalar("embeddings/norm", emb_norm.item(), global_step)
+            writer.add_scalar("embeddings/mean", emb_mean.item(), global_step)
+            writer.add_scalar("embeddings/std", emb_std.item(), global_step)
 
     envs.close()
     writer.close()

@@ -4,11 +4,9 @@ tyro>=0.8
 gymnasium>=0.28
 tensorboard>=2.13
 wandb>=0.15
-
-# PyTorch: install the CUDA-enabled wheel that matches your system CUDA.
-# Your `nvidia-smi` reports CUDA Version: 13.0 — install the cu130 build.
+moviepy 
+imageio 
+imageio-ffmpeg
 # Recommended install (run in the virtualenv):
 #   pip install --upgrade pip
 #   pip install "torch" "torchvision" "torchaudio" --index-url https://download.pytorch.org/whl/cu130
-# Do NOT add a plain `torch` line above because the correct CUDA wheel must come
-# from the PyTorch index; the command above will install matching versions.
