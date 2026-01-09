@@ -24,11 +24,11 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "ALE/Breakout-v5"
     """the id of the environment"""
-    total_timesteps: int = 2000000 #was 500k
+    total_timesteps: int = 2500000 #was 500k
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 8 # was 4 -> 8
     """the number of parallel game environments"""
     num_steps: int = 320
     """the number of steps to run in each environment per policy rollout"""
@@ -44,7 +44,7 @@ class Args:
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2
+    clip_coef: float = 0.1 # was 0.2 in default, now 0.1 for ppo lstm
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""

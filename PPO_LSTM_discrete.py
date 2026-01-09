@@ -11,6 +11,7 @@ from torch.distributions.categorical import Categorical
 import random
 from PPO_args import Args
 from torch.utils.tensorboard import SummaryWriter
+from LSTM_from_scratch import LSTM_Layer
 
 """
 Instead of using LSTM module, will be implementing LSTM from scratch.
@@ -27,79 +28,6 @@ if torch.cuda.is_available():
         print("device name:", torch.cuda.get_device_name(0))
     except Exception:
         pass
-
-class LSTM_cell(nn.Module):
-    def __init__(self, input_size, hidden_size):
-        super(LSTM_cell, self).__init__()
-        #all needed inputs
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.combined_size = self.input_size + self.hidden_size
-        self.forget_gate = nn.Linear(self.combined_size, hidden_size)
-        self.input_gate = nn.Linear(self.combined_size, hidden_size)
-        self.candidate_gate = nn.Linear(self.combined_size, hidden_size)
-        self.output_gate = nn.Linear(self.combined_size, hidden_size)
-
-    def forward(self, i, hidden_state):
-        h_prev, c_prev = hidden_state
-
-        combined = torch.cat([i, h_prev], dim=1)
-
-        if combined.shape[1] != self.combined_size:
-            raise ValueError("combined input dimension does not match input_size + hidden_size")
-
-        #forget gate uses binary classification (sigmoid)
-        f_g = torch.sigmoid(self.forget_gate(combined))
-
-        #input gate uses binary classification (sigmoid)
-        i_g = torch.sigmoid(self.input_gate(combined))
-
-        #candidate gate uses tanh, allows for positive and negative updates
-        c_g = torch.tanh(self.candidate_gate(combined))
-
-        #output gate uses binary classification (sigmoid)
-        o_g = torch.sigmoid(self.output_gate(combined))
-
-        #Follow LSTM rules, tensor algebra
-        c_new = f_g * c_prev + i_g * c_g
-
-        h_new = o_g * torch.tanh(c_new)
-
-        return h_new, c_new
-
-#process sequences
-class LSTM_Layer(nn.Module):
-    def __init__(self, input_size, hidden_size):
-        super(LSTM_Layer, self).__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.lstm_cell = LSTM_cell(input_size, hidden_size)
-    
-    """
-    x: (batch_size, seq_len, input_size)
-    hidden_state: tuple of (h0, c0) or None
-    """
-    def forward(self, x, hidden_state=None):
-        batch_size, seq_len, input_size = x.shape
-        if hidden_state is None:
-            h = torch.zeros(batch_size, self.hidden_size, device=x.device)
-            c = torch.zeros(batch_size, self.hidden_size, device=x.device)
-        else:
-            h , c = hidden_state
-
-        #process embeddings
-        embeddings = []
-
-        #Process timesteps to get the embeddings (these are just stacks of hidden states, ignore cell states)
-        for t in range(0, seq_len):
-            #input here is
-            h, c = self.lstm_cell(x[:, t, :], (h,c))
-            embeddings.append(h)
-
-
-        embeddings = torch.stack(embeddings, dim=1)
-
-        return embeddings, (h, c)
 """
 QR Decomposition -> returns orthonormal basis times std (scalar)
 Affine transformation
@@ -113,7 +41,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 Entirely based on Ray's LSTM wrapper around its RL Algorithms:
 https://github.com/ray-project/ray/blob/master/rllib/examples/rl_modules/classes/lstm_containing_rlm.py
 """
-
+#Supports Discrete Actions with Non CNN based Atari games
 class Agent_LSTM_PPO(nn.Module):
     def __init__(self, obs_dim, action_dim, lstm_hidden_size=64, dense_layers=None, continuous_actions=False):
         super(Agent_LSTM_PPO, self).__init__()
@@ -132,7 +60,6 @@ class Agent_LSTM_PPO(nn.Module):
         self.lstm_hidden_size = lstm_hidden_size
         self.dense_layers = dense_layers
         self.continuous_actions = continuous_actions
-
         self.lstm = LSTM_Layer(self.obs_dim, lstm_hidden_size)
 
         # build FC embedding net that maps LSTM hidden -> embedding
@@ -206,17 +133,6 @@ class Agent_LSTM_PPO(nn.Module):
         # return embeddings for the last time step and the new state
         return embeddings_out, {"h": h_new, "c": c_new}
 
-    def get_values(self, batch, embeddings):
-        # kept for compatibility but prefer get_value
-        if embeddings is None:
-            embeddings_out, _ = self._compute_embeddings_and_state_out(batch)
-            # use last time step
-            embeddings_in = embeddings_out[:, -1, :]
-        else:
-            embeddings_in = embeddings
-        values = self.critic(embeddings_in).squeeze(-1)
-        return values
-
     def get_value(self, obs):
         embeddings_out, _ = self._compute_embeddings_and_state_out(obs)
         embeddings_in = embeddings_out[:, -1, :]
@@ -266,7 +182,8 @@ def make_env(env_id, idx, capture_video, run_name):
         else:
             # Check if it's an Atari environment
             if "NoFrameskip" in env_id or "ALE/" in env_id:
-                env = gym.make(env_id)
+                env = gym.make(env_id, obs_type="ram")
+                print("Making RAM version")
             else:
                 env = gym.make(env_id, continuous=False)
         env = gym.wrappers.RecordEpisodeStatistics(env)
