@@ -19,18 +19,18 @@ class Args:
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     # Algorithm specific arguments
-    env_id: str = "Acrobot-v1"
+    env_id: str = "ALE/Breakout-v5"
     """the id of the environment"""
-    total_timesteps: int = 1500000 #was 500k
+    total_timesteps: int = 2000000 #was 500k
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 256
+    num_steps: int = 320
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""

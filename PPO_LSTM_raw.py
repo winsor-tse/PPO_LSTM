@@ -1,3 +1,4 @@
+import ale_py
 import numpy as np
 import torch
 import torch.nn as nn
@@ -5,11 +6,11 @@ import tyro
 import torch.optim as optim
 import time
 import gymnasium as gym
+from gymnasium.envs.registration import register
 from torch.distributions.categorical import Categorical
 import random
 from PPO_args import Args
 from torch.utils.tensorboard import SummaryWriter
-
 
 """
 Instead of using LSTM module, will be implementing LSTM from scratch.
@@ -180,6 +181,12 @@ class Agent_LSTM_PPO(nn.Module):
         else:
             hidden_state = None
 
+        # For pixel based or image based obs
+        # Flatten observation if needed: (batch, *obs_shape) -> (batch, obs_dim)
+        if obs.ndim > 2:
+            batch_size = obs.shape[0]
+            obs = obs.reshape(batch_size, -1)
+        
         # Ensure obs has sequence dim: (batch, seq_len, obs_dim)
         squeezed = False
         if obs.ndim == 2:
@@ -228,9 +235,19 @@ class Agent_LSTM_PPO(nn.Module):
 
 def make_env(env_id, idx, capture_video, run_name):
     def thunk():
+        # Import ale_py here to ensure ALE environments are registered
+        try:
+            import ale_py
+        except ImportError:
+            pass
+        
         # Use rgb_array render mode when capturing video for the first env
         if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
+            # Check if it's an Atari environment
+            if "NoFrameskip" in env_id or "ALE/" in env_id:
+                env = gym.make(env_id, render_mode="rgb_array")
+            else:
+                env = gym.make(env_id, render_mode="rgb_array", continuous=False)
 
             # episode_trigger will return True whenever we've entered a new
             # global_step bucket of size VIDEO_STATE['freq'] (i.e., every 10k steps)
@@ -247,7 +264,11 @@ def make_env(env_id, idx, capture_video, run_name):
 
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}", episode_trigger=episode_trigger)
         else:
-            env = gym.make(env_id)
+            # Check if it's an Atari environment
+            if "NoFrameskip" in env_id or "ALE/" in env_id:
+                env = gym.make(env_id)
+            else:
+                env = gym.make(env_id, continuous=False)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
 
@@ -284,6 +305,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
+    #from Sync -> Async
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     )

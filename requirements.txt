@@ -1,12 +1,15 @@
 # Core dependencies
 numpy>=1.24
 tyro>=0.8
-gymnasium>=0.28
+gymnasium>=1.0
+gymnasium[atari,accept-rom-license]
+ale-py>=0.11
 tensorboard>=2.13
 wandb>=0.15
 moviepy 
 imageio 
 imageio-ffmpeg
+gymnasium[Box2d]
 # Recommended install (run in the virtualenv):
 #   pip install --upgrade pip
 #   pip install "torch" "torchvision" "torchaudio" --index-url https://download.pytorch.org/whl/cu130
