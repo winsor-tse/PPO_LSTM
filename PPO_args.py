@@ -32,6 +32,8 @@ class Args:
     """the number of parallel game environments"""
     num_steps: int = 320
     """the number of steps to run in each environment per policy rollout"""
+    num_lstm_hidden_size: int = 64
+    """the hidden size of the LSTM layer"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
