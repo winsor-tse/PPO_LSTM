@@ -1,0 +1,143 @@
+# PSEUDOCODE: CleanRL PPO-LSTM, but replace CNN encoder with an MLP for continuous obs
+# Focus: (1) per-env LSTM state tracking, (2) done-masking resets, (3) recurrent minibatching,
+#        (4) reconstructing hidden states from initial_lstm_state during training.
+
+----------------------------------------
+AGENT (MLP encoder + LSTM + actor/critic)
+----------------------------------------
+Agent:
+  encoder φ(o):   # REPLACES the Atari CNN
+    e = MLP(o)            # e_t ∈ R^512 (choose 2–3 FC layers + ReLU)
+    return e
+
+  lstm: LSTM(input=512, hidden=128)
+  actor: Linear(128 -> n_actions)
+  critic: Linear(128 -> 1)
+
+  get_states(x, (h,c), done):
+    # x is a FLAT batch containing one or more time steps stacked
+    e_flat = φ(x)                              # [T*B, 512]   (embedding per step)
+
+    B = (h,c).h.shape[1]                       # num_envs in THIS call
+    e = reshape(e_flat, [T, B, 512])           # restore time-major layout
+    d = reshape(done,   [T, B])                # restore done flags per time/env
+
+    outputs = []
+    for t in 1..T:
+      # DONE MASKING (reset memory at episode boundary):
+      h = (1 - d[t]) * h                       # broadcast over hidden dims
+      c = (1 - d[t]) * c
+
+      # LSTM update uses current step embedding:
+      (out_t, (h,c)) = LSTM(e[t], (h,c))       # out_t == h_t output at time t
+      outputs.append(out_t)
+
+    H_stack = concat(outputs over t)           # [T, B, 128]  (stacked hidden outputs)
+    H_flat  = flatten(H_stack -> [T*B, 128])
+    return (H_flat, (h,c))
+
+  get_action_and_value(x, (h,c), done, action?):
+    H_flat, (h,c) = get_states(x, (h,c), done)
+    logits = actor(H_flat)
+    value  = critic(H_flat)
+    if action is None: action ~ Categorical(logits)
+    logp = log_prob(action)
+    entropy = entropy(logits)
+    return action, logp, entropy, value, (h,c)
+
+
+----------------------------------------
+ROLLOUT COLLECTION (num_steps × num_envs)
+----------------------------------------
+Initialize:
+  next_obs  = envs.reset()                      # [B, obs_dim]
+  next_done = zeros([B])
+  next_lstm = (zeros([L,B,128]), zeros([L,B,128]))   # PER-ENV LSTM STATES
+
+For each iteration:
+  initial_lstm_state = clone(next_lstm)          # SAVE START STATE for reconstruction later
+
+  for step in 1..num_steps:
+    store obs[step]   = next_obs                 # stored as [T,B,...]
+    store done[step]  = next_done
+
+    # ACT using current per-env LSTM state:
+    action, logp, _, value, next_lstm = agent.get_action_and_value(
+        next_obs, next_lstm, next_done
+    )
+    store actions[step], logprobs[step], values[step]
+
+    next_obs, reward, next_done = envs.step(action)
+    store rewards[step]
+
+
+----------------------------------------
+GAE/RETURNS (unchanged, uses stored dones)
+----------------------------------------
+Compute advantages[t,env] and returns[t,env] with standard GAE,
+using next_done to bootstrap correctly per env.
+
+
+----------------------------------------
+FLATTEN BUFFERS (time-major flatten)
+----------------------------------------
+# You have tensors shaped [T, B, ...]
+b_obs       = reshape(obs       -> [T*B, ...])
+b_actions   = reshape(actions   -> [T*B, ...])
+b_logprobs  = reshape(logprobs  -> [T*B])
+b_dones     = reshape(dones     -> [T*B])
+b_returns   = reshape(returns   -> [T*B])
+b_adv       = reshape(advantages-> [T*B])
+b_values    = reshape(values    -> [T*B])
+
+# IMPORTANT: also build the time×env index grid for recurrent minibatching:
+flatinds = arange(T*B).reshape([T, B])
+
+
+----------------------------------------
+RECURRENT MINIBATCHING + LSTM RECONSTRUCTION (THE NUANCES)
+----------------------------------------
+envs_per_batch = B / num_minibatches
+envinds = [0..B-1]
+
+for epoch in 1..update_epochs:
+  shuffle(envinds)
+
+  for start in 0..B step envs_per_batch:
+    mbenvinds = envinds[start : start+envs_per_batch]
+
+    # RECURRENT MINIBATCH INDICES:
+    # Select whole time sequences for a subset of envs, then ravel time-major:
+    mb_inds = flatinds[:, mbenvinds].ravel()
+    # This guarantees: within each selected env, timesteps are in order.
+    # (You are NOT randomly sampling timesteps.)
+
+    # RECONSTRUCT hidden states consistently:
+    # Feed the initial LSTM state for JUST those envs (subset columns)
+    mb_init_lstm = (
+       initial_lstm_state.h[:, mbenvinds],
+       initial_lstm_state.c[:, mbenvinds]
+    )
+
+    # Now recompute (via unroll in get_states) the same hidden trajectory:
+    _, newlogp, entropy, newvalue, _ = agent.get_action_and_value(
+        b_obs[mb_inds],
+        mb_init_lstm,
+        b_dones[mb_inds],            # DONE MASKING applies inside the unroll
+        action = b_actions[mb_inds]
+    )
+
+    # Standard PPO losses computed on mb_inds:
+    ratio = exp(newlogp - b_logprobs[mb_inds])
+    clipped surrogate, value loss, entropy loss
+    backprop/update
+
+----------------------------------------
+WHAT CHANGED vs ORIGINAL CLEANRL?
+----------------------------------------
+Only φ(o): CNN -> MLP for continuous observations.
+All LSTM nuances stay identical:
+  - per-env (h,c) tracking during rollout
+  - done-masking resets inside unroll
+  - minibatches are env-sliced sequences (flatinds[:, mbenvinds])
+  - initial_lstm_state saved + used to reconstruct hidden states during training

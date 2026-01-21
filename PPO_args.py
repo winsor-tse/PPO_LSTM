@@ -22,7 +22,7 @@ class Args:
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     # Algorithm specific arguments
-    env_id: str = "ALE/Breakout-v5"
+    env_id: str = "CartPole-v1"
     """the id of the environment"""
     total_timesteps: int = 2500000 #was 500k
     """total timesteps of the experiments"""

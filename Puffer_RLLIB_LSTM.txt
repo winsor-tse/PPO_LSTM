@@ -1,3 +1,23 @@
+What PCA inside PPO/LSTM can tell you (useful, real signals)
+
+If you record hidden states / feature vectors during eval rollouts and do PCA (or UMAP/t-SNE), you can often see:
+
+Mode separation: states cluster by “behavior phase” (search → approach → attack → retreat), which is exactly what you want for your FSM/option-style design.
+
+Scenario separation: different maps/noise regimes form distinct regions → shows the representation encodes scenario context.
+
+Collapse detection: late training sometimes collapses into a narrow manifold (everything looks the same) → often correlates with brittle behavior.
+
+Memory usage (LSTM): hidden-state trajectories form structured loops/paths over time; if they look like pure noise or constant vectors, your LSTM may not be doing much.
+
+Best practice: color PCA points by high-level discrete action/option, success/failure, or mission phase. That’s when it becomes interpretable.
+
+
+POMDP:
+
+Masked states based on factors (Similar to attention, so we can infer states when not given any) More generalizable.
+
+
 class LSTMWrapper(nn.Module):
     def __init__(self, env, policy, input_size=128, hidden_size=128):
         '''Wraps your policy with an LSTM without letting you shoot yourself in the

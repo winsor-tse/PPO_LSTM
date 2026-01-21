@@ -216,53 +216,54 @@ class Agent_LSTM_PPO(nn.Module):
         return action, probs.log_prob(action), probs.entropy(), self.critic(embeddings_in).squeeze(-1)
 
 
-def create_recurrent_minibatches(data, num_minibatches, num_steps, num_envs):
+def make_recurrent_minibatches(data, initial_states, num_minibatches, num_steps, num_envs):
     """
-    Create recurrent minibatches that preserve temporal structure.
-    
-    Instead of flattening and shuffling randomly, this groups trajectories
-    from each environment into contiguous recurrent minibatches.
-    
-    Args:
-        data: dict with keys 'obs', 'actions', 'logprobs', 'advantages', 'returns', 'values'
-        num_minibatches: number of minibatches to create
-        num_steps: number of steps in trajectory
-        num_envs: number of parallel environments
-    
-    Returns:
-        list of dicts, each containing minibatch data with shape (num_minibatches, recurrent_seq_len, ...)
+    Yields recurrent minibatches of length = num_steps with LSTM states.
     """
-    batch_size = num_steps * num_envs
-    minibatch_size = batch_size // num_minibatches
-    
-    # Reshape data from (num_steps, num_envs, ...) to (batch_size, ...)
-    def reshape_for_minibatch(tensor):
-        if tensor.ndim >= 2:
-            return tensor.reshape(-1, *tensor.shape[2:])
-        return tensor.reshape(-1)
-    
-    b_obs = reshape_for_minibatch(data['obs'])
-    b_actions = reshape_for_minibatch(data['actions'])
-    b_logprobs = reshape_for_minibatch(data['logprobs'])
-    b_advantages = reshape_for_minibatch(data['advantages'])
-    b_returns = reshape_for_minibatch(data['returns'])
-    b_values = reshape_for_minibatch(data['values'])
-    b_dones = reshape_for_minibatch(data['dones'])
-    
+
+    # reshape data: [T, N, ...]
+    obs = data['obs']
+    actions = data['actions']
+    dones = data['dones']
+    logprobs = data['logprobs']
+    advantages = data['advantages']
+    returns = data['returns']
+    values = data['values']
+
+    env_inds = np.arange(num_envs)
+    np.random.shuffle(env_inds)
+    envs_per_batch = num_envs // num_minibatches
+
     minibatches = []
-    for start in range(0, batch_size, minibatch_size):
-        end = min(start + minibatch_size, batch_size)
+    for start in range(0, num_envs, envs_per_batch):
+        sub_env_inds = env_inds[start:start+envs_per_batch]
+
+        batch_obs = obs[:, sub_env_inds]
+        batch_actions = actions[:, sub_env_inds]
+        batch_dones = dones[:, sub_env_inds]
+        batch_logprobs = logprobs[:, sub_env_inds]
+        batch_adv = advantages[:, sub_env_inds]
+        batch_ret = returns[:, sub_env_inds]
+        batch_val  = values[:, sub_env_inds]
+
+        # initial states for this group
+        h_in = initial_states['h'][:, sub_env_inds]
+        c_in = initial_states['c'][:, sub_env_inds]
+
         minibatches.append({
-            'obs': b_obs[start:end],
-            'actions': b_actions[start:end],
-            'logprobs': b_logprobs[start:end],
-            'advantages': b_advantages[start:end],
-            'returns': b_returns[start:end],
-            'values': b_values[start:end],
-            'dones': b_dones[start:end],
+            'obs': batch_obs,
+            'actions': batch_actions,
+            'dones': batch_dones,
+            'logprobs': batch_logprobs,
+            'advantages': batch_adv,
+            'returns': batch_ret,
+            'values': batch_val,
+            'lstm_h': h_in,
+            'lstm_c': c_in,
         })
-    
+
     return minibatches
+
 
 
 def make_env(env_id, idx, capture_video, run_name):
@@ -301,7 +302,7 @@ def make_env(env_id, idx, capture_video, run_name):
                 env = gym.make(env_id, obs_type="ram")
                 print("Making RAM version")
             else:
-                env = gym.make(env_id, continuous=False)
+                env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
 
@@ -354,7 +355,14 @@ if __name__ == "__main__":
     ).to(device)
     print("Agent device:", next(agent.parameters()).device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    
 
+    #TODO: These need top be stored by time step?
+    """
+    obs[t], actions[t], dones[t],
+    logprobs[t], values[t],
+    lstm_h_state[t], lstm_c_state[t]
+    """
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
@@ -363,9 +371,9 @@ if __name__ == "__main__":
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
     
-    # Initialize LSTM state for each environment (per-env recurrent state)
-    lstm_h_state = torch.zeros(args.num_envs, args.num_lstm_hidden_size, device=device)
-    lstm_c_state = torch.zeros(args.num_envs, args.num_lstm_hidden_size, device=device)
+    # Initialize LSTM state per num steps and per num envs
+    lstm_h_state = torch.zeros(args.num_steps, args.num_envs, args.num_lstm_hidden_size, device=device)
+    lstm_c_state = torch.zeros_like(lstm_h_state)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -394,7 +402,7 @@ if __name__ == "__main__":
                 # Create batch dict with current obs and state
                 batch_dict = {
                     'obs': next_obs,
-                    'state_in': {'h': lstm_h_state.unsqueeze(0), 'c': lstm_c_state.unsqueeze(0)},
+                    'state_in': {'h': lstm_h_state[step].unsqueeze(0), 'c': lstm_c_state[step].unsqueeze(0)},
                     'dones': next_done
                 }
                 action, logprob, _, value = agent.get_action_and_value(batch_dict)
@@ -402,8 +410,8 @@ if __name__ == "__main__":
                 
                 # Update LSTM state (we need to capture it after the forward pass)
                 embeddings_out, state_out = agent._compute_embeddings_and_state_out(batch_dict, mask_done=True, zero_state_at_done=False)
-                lstm_h_state = state_out['h'].squeeze(0)
-                lstm_c_state = state_out['c'].squeeze(0)
+                lstm_h_state[step] = state_out['h'].squeeze(0)
+                lstm_c_state[step] = state_out['c'].squeeze(0)
                 
             actions[step] = action
             logprobs[step] = logprob
@@ -451,90 +459,67 @@ if __name__ == "__main__":
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
             returns = advantages + values
 
-        # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
-        b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_values = values.reshape(-1)
-        b_dones = dones.reshape(-1)
+        minibatches = make_recurrent_minibatches()
 
-        # Optimizing the policy and value network
-        clipfracs = []
+        for mb in minibatches:
+            # mb shapes:
+            # obs:      [T, B, obs_dim]
+            # actions:  [T, B]
+            # dones:    [T, B]
 
-        for epoch in range(args.update_epochs):
-            # Create recurrent minibatches that preserve temporal structure
-            minibatches = create_recurrent_minibatches(
-                {
-                    'obs': obs,
-                    'actions': actions,
-                    'logprobs': logprobs,
-                    'advantages': advantages,
-                    'returns': returns,
-                    'values': values,
-                    'dones': dones,
+            T, B = mb["obs"].shape[:2]
+
+            batch_dict = {
+                "obs": mb["obs"],
+                "state_in": {
+                    "h": mb["lstm_h"],  # [1, B, H]
+                    "c": mb["lstm_c"],
                 },
-                args.num_minibatches,
-                args.num_steps,
-                args.num_envs
+                "dones": mb["dones"],
+            }
+
+            # 1) UNROLL LSTM OVER TIME
+            embeddings, _ = agent._compute_embeddings_and_state_out(
+                batch_dict,
+                mask_done=True,
+                zero_state_at_done=True,
             )
-            
-            for mb in minibatches:
-                mb_obs = mb['obs']
-                mb_actions = mb['actions'].long()
-                mb_logprobs = mb['logprobs']
-                mb_advantages = mb['advantages']
-                mb_returns = mb['returns']
-                mb_values = mb['values']
-                mb_dones = mb['dones']
-                
-                # Create batch dict with done masking for LSTM
-                batch_dict = {
-                    'obs': mb_obs,
-                    'dones': mb_dones
-                }
-                
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(batch_dict, mb_actions)
-                logratio = newlogprob - mb_logprobs
-                ratio = logratio.exp()
+            # embeddings: [T, B, hidden]
+            flat_embeddings = embeddings.reshape(T * B, -1)
 
-                with torch.no_grad():
-                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
-                    old_approx_kl = (-logratio).mean()
-                    approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
+            # 2) Policy + value from same embeddings
+            logits = agent.actor(flat_embeddings)
+            dist = Categorical(logits=logits)
 
-                if args.norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+            flat_actions = mb["actions"].reshape(-1)
+            flat_logprobs = mb["logprobs"].reshape(-1)
+            flat_advantages = mb["advantages"].reshape(-1)
+            flat_returns = mb["returns"].reshape(-1)
+            flat_values = mb["values"].reshape(-1)
 
-                # Policy loss
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+            newlogprob = dist.log_prob(flat_actions)
+            entropy = dist.entropy()
 
-                # Value loss
-                newvalue = newvalue.view(-1)
-                if args.clip_vloss:
-                    v_loss_unclipped = (newvalue - mb_returns) ** 2
-                    v_clipped = mb_values + torch.clamp(
-                        newvalue - mb_values,
-                        -args.clip_coef,
-                        args.clip_coef,
-                    )
-                    v_loss_clipped = (v_clipped - mb_returns) ** 2
-                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                    v_loss = 0.5 * v_loss_max.mean()
-                else:
-                    v_loss = 0.5 * ((newvalue - mb_returns) ** 2).mean()
+            ratio = (newlogprob - flat_logprobs).exp()
 
-                entropy_loss = entropy.mean()
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+            # PPO loss
+            pg_loss1 = -flat_advantages * ratio
+            pg_loss2 = -flat_advantages * torch.clamp(
+                ratio, 1 - args.clip_coef, 1 + args.clip_coef
+            )
+            pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-                optimizer.step()
+            # Value loss
+            newvalue = agent.critic(flat_embeddings).squeeze(-1)
+            v_loss = 0.5 * ((newvalue - flat_returns) ** 2).mean()
+
+            entropy_loss = entropy.mean()
+            loss = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss
+
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+            optimizer.step()
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
