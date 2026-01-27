@@ -1,0 +1,176 @@
+🧠 1. Linear Probing (State Reconstruction via Probes)
+🔍 Purpose:
+
+Test whether the LSTM hidden state 
+ℎ
+𝑡
+h
+t
+	​
+
+ contains enough information to reconstruct the true environment state or predict actions.
+
+📌 How:
+
+Freeze the policy network after training.
+
+Train a simple linear model (or MLP) that takes 
+ℎ
+𝑡
+h
+t
+	​
+
+ as input and tries to:
+
+Predict the true hidden state (in POMDPs)
+
+Predict the action label taken by the agent
+
+If a linear probe can do this with high accuracy, it proves the LSTM learned a useful internal representation.
+
+🧪 Example in code:
+probe = LogisticRegression()  # or a linear regressor
+probe.fit(hidden_states, actions)
+accuracy = probe.score(hidden_states, actions)
+
+✅ Used in:
+
+Understanding Intermediate Layers using Linear Probes
+
+Towards Better Interpretability of Recurrent Policies
+
+📊 2. Dimensionality Reduction + Visualization (PCA, t-SNE, UMAP)
+🔍 Purpose:
+
+Visualize whether internal memory states cluster by actions, goals, or beliefs.
+
+📌 How:
+
+Collect hidden states 
+ℎ
+𝑡
+h
+t
+	​
+
+ over many episodes
+
+Color points by:
+
+Chosen action
+
+Episode return
+
+Time step (to show evolution over time)
+
+Use PCA, t-SNE, or UMAP to reduce dimensionality
+
+✅ Used in:
+
+World Models (Ha & Schmidhuber)
+
+RL with Belief Representations (ICLR)
+
+Recurrent World Models Facilitate Exploration
+
+📈 3. Canonical Correlation Analysis (CCA)
+🔍 Purpose:
+
+Test how correlated the LSTM’s hidden state is with the true latent state of the environment.
+
+📌 How:
+
+Collect:
+
+Hidden states 
+ℎ
+𝑡
+h
+t
+	​
+
+
+True environment states 
+𝑠
+𝑡
+s
+t
+	​
+
+ (if accessible)
+
+Use CCA to measure how aligned they are in latent space
+
+✅ Output:
+
+High canonical correlation → LSTM memory aligns with ground truth
+
+✅ Used in:
+
+A Closer Look at Deep Policy Networks (ICLR)
+
+Dissecting Reinforcement Learning with CCA (EMNLP)
+
+🔍 4. Saliency / Integrated Gradients (Temporal Importance)
+🔍 Purpose:
+
+Understand which past inputs influenced the LSTM's decision at time 
+𝑡
+t.
+
+📌 How:
+
+Use saliency maps or Integrated Gradients
+
+Backprop from action logits to:
+
+Current input
+
+Previous hidden states
+
+Highlights which frames or features the agent is attending to
+
+✅ Used in:
+
+Saliency in RL Agents (NeurIPS)
+
+Attribution Priors for Memory-Augmented RL
+
+🔄 5. Ablation of Memory Depth / Truncation Length
+🔍 Purpose:
+
+Empirically determine how much past information the agent depends on.
+
+📌 How:
+
+During evaluation, reset LSTM state every 
+𝑘
+k steps
+
+Measure performance drop
+
+Plot performance vs. memory length
+
+✅ Output:
+
+Shows how many steps the belief state spans
+
+Grounded in temporal credit assignment theory
+
+✅ Used in:
+
+On the Effect of Memory in Non-Markovian Environments
+
+Recurrent RL as Belief MDP Solver (ICML 2022)
+
+✅ Professional Reporting Style in Papers
+
+A high-quality RL paper will usually include:
+
+Analysis Type	Reporting
+Linear Probing	Accuracy (%), plot predicted vs. true state
+PCA / t-SNE	2D scatter plot, colored by action or reward
+CCA	Canonical correlation scores, 1–N
+Saliency	Heatmaps or attention over time
+Memory Ablation	Line plot: performance vs. memory length

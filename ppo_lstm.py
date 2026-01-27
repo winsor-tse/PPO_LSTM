@@ -42,7 +42,7 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 8
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 256
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -97,6 +97,28 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+def save_model(agent, optimizer, run_name, global_step):
+    os.makedirs("checkpoints", exist_ok=True)
+    save_path = f"checkpoints/{run_name}_step{global_step}.pt"
+    torch.save({
+        "agent_state_dict": agent.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "global_step": global_step,
+    }, save_path)
+    print(f"Model saved to {save_path}")
+
+def load_model(agent, optimizer, run_name, device):
+    checkpoint_files = [f for f in os.listdir("checkpoints") if run_name in f]
+    if not checkpoint_files:
+        return 0  # Start from scratch if no checkpoints
+    latest = sorted(checkpoint_files)[-1]
+    checkpoint = torch.load(f"checkpoints/{latest}", map_location=device)
+    agent.load_state_dict(checkpoint["agent_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    print(f"Loaded model from {latest}")
+    return checkpoint["global_step"]
+
+
 
 class Agent(nn.Module):
     def __init__(self, envs):
@@ -118,8 +140,21 @@ class Agent(nn.Module):
                 nn.init.constant_(param, 0)
             elif "weight" in name:
                 nn.init.orthogonal_(param, 1.0)
-        self.actor = layer_init(nn.Linear(128, envs.single_action_space.n), std=0.01)
-        self.critic = layer_init(nn.Linear(128, 1), std=1)
+        self.actor = nn.Sequential(
+            layer_init(nn.Linear(128, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
+        )
+        # Critic head
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(128, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 1), std=1.0),
+        )
 
     def get_states(self, x, lstm_state, done):
         embedding = self.network(x)
@@ -206,7 +241,7 @@ if __name__ == "__main__":
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
     # TRY NOT TO MODIFY: start the game
-    global_step = 0
+    global_step = load_model(agent, optimizer, run_name, device)
     start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
@@ -235,6 +270,8 @@ if __name__ == "__main__":
             # ALGO LOGIC: action logic
             with torch.no_grad():
                 action, logprob, _, value, next_lstm_state = agent.get_action_and_value(next_obs, next_lstm_state, next_done)
+                writer.add_scalar("lstm/hidden_state_norm", next_lstm_state[0].norm().item(), global_step)
+                writer.add_scalar("lstm/cell_state_norm", next_lstm_state[1].norm().item(), global_step)
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -273,7 +310,9 @@ if __name__ == "__main__":
                             print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                             writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                             writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-
+                #Save model every 100k steps
+                if global_step % 100000 == 0 and global_step != 0:
+                    save_model(agent, optimizer, run_name, global_step)
         # bootstrap value if not done
         with torch.no_grad():
             next_value = agent.get_value(
@@ -382,5 +421,6 @@ if __name__ == "__main__":
         #print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
+    save_model(agent, optimizer, run_name, global_step)
     envs.close()
     writer.close()
