@@ -267,7 +267,8 @@ if __name__ == "__main__":
     print(f"\n Avg Return over {args.num_eval_episodes} episodes: {np.mean(returns):.2f}")
     print(f" Return Std Dev: {np.std(returns):.2f}")
 
-    export_torchscript(agent, device)
+    #Torch script support cpu for now..
+    export_torchscript(agent, 'cpu')
 
     if args.analyze_embeddings:
         visualize_embeddings(embeddings, actions, args)

@@ -1,0 +1,39 @@
+Make sure libtorch version downloaded matches:
+
+torch==2.9.1+cu130 from requirements.txt
+this project uses libtorch-win-shared-with-deps-2.9.1+cpu
+
+Also have cmake installed and Cpp 17
+
+Save agent_scrip (model) in CPU, even if you trained in CUDA, no current versions for CUDA in libtorch
+
+agent_script is put into build but can be placed anywhere as long as you specify in main.cpp
+
+# From the project root (where CMakeLists.txt is)
+mkdir -p build
+cd build
+
+# Configure for Release mode
+cmake -DCMAKE_BUILD_TYPE=Release ..
+
+# Build the project
+cmake --build . --config Release
+
+# Run the compiled binary
+.\Release\agent_inference.exe
+
+CD to build dir and run
+.\Release\agent_inference.exe
+
+Sample Output:
+[INFO] Starting agent inference...
+[INFO] Trying to load model from agent_script.pt
+[INFO] Model loaded!
+[INFO] Set model to eval mode.
+[INFO] Preparing dummy inputs...
+[INFO] Inputs prepared.
+[INFO] Running model.forward...
+[INFO] Extracting outputs...
+[RESULT] Action taken: 1
+[RESULT] Hidden state norm: 2.50401
+[INFO] Inference complete.
