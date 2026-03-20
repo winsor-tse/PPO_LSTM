@@ -26,7 +26,7 @@ int main() {
     model.eval();
     std::cout << "[INFO] Set model to eval mode." << std::endl;
 
-    //Current Env's Dimentions and hidden size
+    //Current CartPole v1 Env's Dimensions and hidden size
     const int obs_dim = 4;
     const int hidden_size = 128;
     const int num_layers = 1;
