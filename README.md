@@ -177,3 +177,7 @@ Possible extensions described in `LSTM_analysis.txt` include:
 - TorchScript export is CPU-oriented for the included LibTorch example.
 - `ppo_lstm_inference.py` uses dataclass defaults rather than command-line parsing, so edit `EvalArgs` before evaluation/export.
 - The C++ example is intentionally minimal and should be adapted to your real environment loop.
+
+## License
+
+This project is open source under the MIT License.
